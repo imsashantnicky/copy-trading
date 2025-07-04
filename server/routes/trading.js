@@ -9,9 +9,9 @@ const router = express.Router();
 const childAccountMappings = new Map();
 const orderHistory = new Map();
 
-// Upstox API base URLs
+// Upstox API base URLs - CORRECTED
 const UPSTOX_API_BASE = 'https://api.upstox.com/v2';
-const UPSTOX_V3_API_BASE = 'https://api-v3.upstox.com'; // Corrected V3 URL
+const UPSTOX_V3_API_BASE = 'https://api-v3.upstox.com'; // This is the correct V3 URL
 
 // Helper function to make Upstox API calls with better error handling
 const makeUpstoxCall = async (endpoint, method = 'GET', data = null, accessToken) => {
@@ -48,16 +48,23 @@ const makeUpstoxCall = async (endpoint, method = 'GET', data = null, accessToken
   }
 };
 
-// Helper function for V3 API calls (for order placement)
+// Helper function for V3 API calls (for order placement) - FIXED URL
 const makeUpstoxV3Call = async (endpoint, method = 'POST', data = null, accessToken) => {
   try {
     console.log(`🔗 Making Upstox V3 API call: ${method} ${endpoint}`);
     console.log(`🔑 Using token: ${accessToken?.substring(0, 20)}...`);
     console.log(`📤 Request data:`, JSON.stringify(data, null, 2));
     
+    // Use the correct V3 API URL format
+    const apiUrl = process.env.UPSTOX_ENV === 'live' 
+      ? 'https://api-hft.upstox.com/v3'
+      : 'https://api-sandbox.upstox.com/v3';
+    
+    console.log(`🌐 Using API URL: ${apiUrl}`);
+    
     const config = {
       method,
-      url: `${UPSTOX_V3_API_BASE}${endpoint}`,
+      url: `${apiUrl}${endpoint}`,
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Accept': 'application/json',
@@ -70,8 +77,16 @@ const makeUpstoxV3Call = async (endpoint, method = 'POST', data = null, accessTo
       config.data = data;
     }
 
+    console.log(`📡 Full request config:`, {
+      url: config.url,
+      method: config.method,
+      headers: config.headers,
+      data: config.data
+    });
+
     const response = await axios(config);
     console.log(`✅ Upstox V3 API success: ${response.status}`);
+    console.log(`📥 Response data:`, response.data);
     return response;
   } catch (error) {
     console.error(`❌ Upstox V3 API error for ${endpoint}:`, {
@@ -79,11 +94,8 @@ const makeUpstoxV3Call = async (endpoint, method = 'POST', data = null, accessTo
       statusText: error.response?.statusText,
       data: error.response?.data,
       message: error.message,
-      config: {
-        url: error.config?.url,
-        method: error.config?.method,
-        headers: error.config?.headers
-      }
+      url: error.config?.url,
+      requestData: error.config?.data
     });
     throw error;
   }
@@ -218,7 +230,7 @@ router.get('/orders', authenticateToken, async (req, res) => {
   }
 });
 
-// Place order using Upstox V3 API
+// Place order using Upstox V3 API - FIXED
 router.post('/orders', authenticateToken, async (req, res) => {
   try {
     const {
@@ -247,7 +259,8 @@ router.post('/orders', authenticateToken, async (req, res) => {
       price,
       order_type,
       transaction_type,
-      accessToken: req.user.access_token?.substring(0, 20) + '...'
+      accessToken: req.user.access_token?.substring(0, 20) + '...',
+      environment: process.env.UPSTOX_ENV || 'sandbox'
     });
 
     // Validate required fields
@@ -259,25 +272,34 @@ router.post('/orders', authenticateToken, async (req, res) => {
     }
 
     // First validate the token
-    await validateAccessToken(req.user.access_token);
+    try {
+      await validateAccessToken(req.user.access_token);
+    } catch (tokenError) {
+      console.error('❌ Token validation failed during order placement:', tokenError);
+      return res.status(401).json({
+        success: false,
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
 
-    // Prepare order data for Upstox V3 API
+    // Prepare order data for Upstox V3 API - EXACT FORMAT
     const orderData = {
       quantity: parseInt(quantity),
-      product,
+      product: product,
       validity: validity || 'DAY',
       price: parseFloat(price) || 0,
       tag: tag || `copy_trading_${Date.now()}`,
-      instrument_token,
-      order_type,
-      transaction_type,
+      instrument_token: instrument_token,
+      order_type: order_type,
+      transaction_type: transaction_type,
       disclosed_quantity: parseInt(disclosed_quantity) || 0,
       trigger_price: parseFloat(trigger_price) || 0,
       is_amo: Boolean(is_amo),
       slice: Boolean(slice)
     };
 
-    console.log('📤 Sending order to Upstox V3 API:', JSON.stringify(orderData, null, 2));
+    console.log('📤 Final order data for Upstox V3 API:', JSON.stringify(orderData, null, 2));
 
     // Place order with Upstox V3 API
     const response = await makeUpstoxV3Call('/order/place', 'POST', orderData, req.user.access_token);
@@ -286,6 +308,10 @@ router.post('/orders', authenticateToken, async (req, res) => {
 
     const orderIds = response.data.data?.order_ids || [response.data.data?.order_id];
     const primaryOrderId = orderIds[0];
+
+    if (!primaryOrderId) {
+      throw new Error('No order ID received from Upstox API');
+    }
 
     // Create order object for our system
     const order = {
@@ -386,7 +412,8 @@ router.post('/orders', authenticateToken, async (req, res) => {
       message: error.message,
       response: error.response?.data,
       status: error.response?.status,
-      config: error.config
+      config: error.config,
+      requestBody: req.body
     });
     
     // Check if it's a token error
@@ -398,11 +425,27 @@ router.post('/orders', authenticateToken, async (req, res) => {
         details: error.response?.data
       });
     }
+
+    // Check for specific Upstox errors
+    let errorMessage = 'Failed to place order';
+    if (error.response?.data?.errors?.[0]?.message) {
+      errorMessage = error.response.data.errors[0].message;
+    } else if (error.response?.data?.message) {
+      errorMessage = error.response.data.message;
+    } else if (error.message) {
+      errorMessage = error.message;
+    }
     
     res.status(500).json({ 
       success: false, 
-      error: error.response?.data?.message || 'Failed to place order',
-      details: error.response?.data
+      error: errorMessage,
+      details: error.response?.data,
+      debug: {
+        url: error.config?.url,
+        method: error.config?.method,
+        status: error.response?.status,
+        environment: process.env.UPSTOX_ENV || 'sandbox'
+      }
     });
   }
 });
@@ -670,6 +713,21 @@ router.post('/refresh-token', authenticateToken, async (req, res) => {
       code: 'TOKEN_EXPIRED'
     });
   }
+});
+
+// Debug endpoint to check environment
+router.get('/debug/environment', authenticateToken, async (req, res) => {
+  res.json({
+    success: true,
+    environment: {
+      UPSTOX_ENV: process.env.UPSTOX_ENV || 'sandbox',
+      API_BASE: process.env.UPSTOX_ENV === 'live' 
+        ? 'https://api-hft.upstox.com/v3'
+        : 'https://api-sandbox.upstox.com/v3',
+      NODE_ENV: process.env.NODE_ENV,
+      timestamp: new Date().toISOString()
+    }
+  });
 });
 
 // Periodic order status updates (simulate real-time updates)

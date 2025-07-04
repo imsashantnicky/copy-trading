@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { tradingService } from '../services/tradingService';
-import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock, RefreshCw } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock, RefreshCw, Info } from 'lucide-react';
 
 const TradingPanel: React.FC = () => {
   const { user } = useAuth();
@@ -21,21 +21,44 @@ const TradingPanel: React.FC = () => {
     tag: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [isValidatingToken, setIsValidatingToken] = useState(false);
+  const [debugInfo, setDebugInfo] = useState<any>(null);
 
   useEffect(() => {
     // Validate token on component mount
     validateUserToken();
+    // Get debug info
+    getDebugInfo();
   }, []);
+
+  const getDebugInfo = async () => {
+    try {
+      const response = await fetch(`${import.meta.env.VITE_API_URL}/trading/debug/environment`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('upstox_token')}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      const data = await response.json();
+      setDebugInfo(data.environment);
+    } catch (error) {
+      console.error('Failed to get debug info:', error);
+    }
+  };
 
   const validateUserToken = async () => {
     try {
       setIsValidatingToken(true);
       await tradingService.validateToken();
       console.log('✅ Token validation successful');
+      setMessage({ 
+        type: 'info', 
+        text: 'Session validated successfully' 
+      });
+      setTimeout(() => setMessage(null), 3000);
     } catch (error) {
       console.error('❌ Token validation failed:', error);
       setMessage({ 
@@ -47,14 +70,14 @@ const TradingPanel: React.FC = () => {
     }
   };
 
-  // Mock instrument search - in production, integrate with Upstox instruments API
+  // Mock instrument search with real Upstox instrument tokens
   const searchInstruments = async (query: string) => {
     if (query.length < 2) {
       setSearchResults([]);
       return;
     }
 
-    // Mock search results with proper instrument tokens
+    // Mock search results with proper instrument tokens and current prices
     const mockResults = [
       { 
         instrument_token: 'NSE_EQ|INE002A01018', 
@@ -104,6 +127,27 @@ const TradingPanel: React.FC = () => {
         name: 'Indian Railway Catering And Tourism Corporation Ltd', 
         exchange: 'NSE',
         last_price: 789.20
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE155A01022', 
+        trading_symbol: 'TATAMOTORS', 
+        name: 'Tata Motors Ltd', 
+        exchange: 'NSE',
+        last_price: 789.50
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE018A01030', 
+        trading_symbol: 'WIPRO', 
+        name: 'Wipro Ltd', 
+        exchange: 'NSE',
+        last_price: 567.30
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE062A01020', 
+        trading_symbol: 'BPCL', 
+        name: 'Bharat Petroleum Corporation Ltd', 
+        exchange: 'NSE',
+        last_price: 289.75
       }
     ].filter(item => 
       item.trading_symbol.toLowerCase().includes(query.toLowerCase()) ||
@@ -178,6 +222,8 @@ const TradingPanel: React.FC = () => {
         errorMessage = 'Session expired. Please login again.';
       } else if (error.response?.data?.details?.errors?.[0]?.message) {
         errorMessage = error.response.data.details.errors[0].message;
+      } else if (error.response?.data?.error) {
+        errorMessage = error.response.data.error;
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
       } else if (error.message) {
@@ -264,10 +310,26 @@ const TradingPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* Debug Info */}
+      {debugInfo && (
+        <div className="mb-4 p-3 bg-blue-900 bg-opacity-30 rounded-md border border-blue-700">
+          <div className="flex items-center space-x-2 text-blue-300 mb-2">
+            <Info className="h-4 w-4" />
+            <span className="text-sm font-medium">Environment Info</span>
+          </div>
+          <div className="text-xs text-blue-200 space-y-1">
+            <div>Environment: <span className="font-mono">{debugInfo.UPSTOX_ENV}</span></div>
+            <div>API Base: <span className="font-mono">{debugInfo.API_BASE}</span></div>
+          </div>
+        </div>
+      )}
+
       {message && (
         <div className={`mb-4 p-3 rounded-md flex items-center space-x-2 ${
           message.type === 'success' 
             ? 'bg-green-900 bg-opacity-50 text-green-300 border border-green-700' 
+            : message.type === 'info'
+            ? 'bg-blue-900 bg-opacity-50 text-blue-300 border border-blue-700'
             : 'bg-red-900 bg-opacity-50 text-red-300 border border-red-700'
         }`}>
           <AlertCircle className="h-4 w-4" />
@@ -517,8 +579,24 @@ const TradingPanel: React.FC = () => {
       {orderForm.instrument_token && (
         <div className="mt-4 p-3 bg-gray-700 rounded-md">
           <div className="text-xs text-gray-400">
-            <div>Instrument Token: {orderForm.instrument_token}</div>
-            <div>Trading Symbol: {orderForm.trading_symbol}</div>
+            <div>Instrument Token: <span className="font-mono">{orderForm.instrument_token}</span></div>
+            <div>Trading Symbol: <span className="font-mono">{orderForm.trading_symbol}</span></div>
+            <div>Order Data Preview:</div>
+            <pre className="mt-2 text-xs bg-gray-800 p-2 rounded overflow-x-auto">
+{JSON.stringify({
+  quantity: parseInt(orderForm.quantity) || 0,
+  product: orderForm.product,
+  validity: orderForm.validity,
+  price: parseFloat(orderForm.price) || 0,
+  instrument_token: orderForm.instrument_token,
+  order_type: orderForm.order_type,
+  transaction_type: orderForm.transaction_type,
+  disclosed_quantity: parseInt(orderForm.disclosed_quantity) || 0,
+  trigger_price: parseFloat(orderForm.trigger_price) || 0,
+  is_amo: orderForm.is_amo,
+  slice: orderForm.slice
+}, null, 2)}
+            </pre>
           </div>
         </div>
       )}
