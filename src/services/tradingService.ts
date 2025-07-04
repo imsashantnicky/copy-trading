@@ -12,6 +12,33 @@ const getAuthHeaders = () => {
   };
 };
 
+// Handle API errors and token expiration
+const handleApiError = (error: any) => {
+  if (axios.isAxiosError(error)) {
+    console.error('❌ API Error:', {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status
+    });
+
+    // Check for token expiration
+    if (error.response?.status === 401 || 
+        error.response?.data?.code === 'TOKEN_EXPIRED' ||
+        error.response?.data?.errors?.[0]?.errorCode === 'UDAPI100050') {
+      
+      // Clear invalid token
+      localStorage.removeItem('upstox_token');
+      localStorage.removeItem('user_data');
+      
+      // Redirect to login
+      window.location.href = '/login';
+      
+      throw new Error('Session expired. Please login again.');
+    }
+  }
+  throw error;
+};
+
 export const tradingService = {
   getPositions: async (): Promise<Position[]> => {
     try {
@@ -24,16 +51,8 @@ export const tradingService = {
       console.log('✅ Positions fetched:', response.data);
       return response.data.positions;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Positions fetch error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error:', error);
-      }
-      throw error;
+      handleApiError(error);
+      return [];
     }
   },
 
@@ -48,16 +67,8 @@ export const tradingService = {
       console.log('✅ Orders fetched:', response.data);
       return response.data.orders;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Orders fetch error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error:', error);
-      }
-      throw error;
+      handleApiError(error);
+      return [];
     }
   },
 
@@ -72,16 +83,8 @@ export const tradingService = {
       console.log('✅ Trades fetched:', response.data);
       return response.data.trades;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Trades fetch error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error:', error);
-      }
-      throw error;
+      handleApiError(error);
+      return [];
     }
   },
 
@@ -96,6 +99,11 @@ export const tradingService = {
     try {
       console.log('🚀 Placing order:', orderData);
 
+      // Validate required fields
+      if (!orderData.trading_symbol || !orderData.quantity || !orderData.order_type || !orderData.transaction_type || !orderData.product) {
+        throw new Error('Missing required fields: trading_symbol, quantity, order_type, transaction_type, product');
+      }
+
       // Convert to Upstox V3 API format
       const upstoxOrderData: OrderRequest = {
         quantity: orderData.quantity,
@@ -109,8 +117,10 @@ export const tradingService = {
         disclosed_quantity: orderData.disclosed_quantity || 0,
         trigger_price: orderData.trigger_price || 0,
         is_amo: orderData.is_amo || false,
-        slice: orderData.slice || true
+        slice: orderData.slice !== false // Default to true
       };
+
+      console.log('📤 Sending order data:', upstoxOrderData);
 
       const response = await axios.post(`${API_URL}/trading/orders`, upstoxOrderData, {
         headers: getAuthHeaders()
@@ -119,16 +129,7 @@ export const tradingService = {
       console.log('✅ Order placed successfully:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Order placement error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status,
-          orderData
-        });
-      } else {
-        console.error('❌ Unexpected error during order placement:', error);
-      }
+      handleApiError(error);
       throw error;
     }
   },
@@ -144,16 +145,7 @@ export const tradingService = {
       console.log('✅ Order cancelled successfully:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Order cancellation error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status,
-          orderId
-        });
-      } else {
-        console.error('❌ Unexpected error during order cancellation:', error);
-      }
+      handleApiError(error);
       throw error;
     }
   },
@@ -169,17 +161,7 @@ export const tradingService = {
       console.log('✅ Order modified successfully:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Order modification error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status,
-          orderId,
-          orderData
-        });
-      } else {
-        console.error('❌ Unexpected error during order modification:', error);
-      }
+      handleApiError(error);
       throw error;
     }
   },
@@ -195,16 +177,8 @@ export const tradingService = {
       console.log('✅ Portfolio fetched:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Portfolio fetch error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error while fetching portfolio:', error);
-      }
-      throw error;
+      handleApiError(error);
+      return { portfolio: { total_value: 0, day_pnl: 0, total_pnl: 0 } };
     }
   },
 
@@ -220,16 +194,8 @@ export const tradingService = {
       console.log('✅ Child accounts fetched:', response.data);
       return response.data.children;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Child accounts fetch error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error while fetching child accounts:', error);
-      }
-      throw error;
+      handleApiError(error);
+      return [];
     }
   },
 
@@ -244,15 +210,7 @@ export const tradingService = {
       console.log('✅ Child account added successfully:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Add child account error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error while adding child account:', error);
-      }
+      handleApiError(error);
       throw error;
     }
   },
@@ -268,15 +226,7 @@ export const tradingService = {
       console.log('✅ Child account removed successfully:', response.data);
       return response.data;
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        console.error('❌ Remove child account error:', {
-          message: error.message,
-          response: error.response?.data,
-          status: error.response?.status
-        });
-      } else {
-        console.error('❌ Unexpected error while removing child account:', error);
-      }
+      handleApiError(error);
       throw error;
     }
   },
@@ -294,7 +244,8 @@ export const tradingService = {
       return response.data;
     } catch (error) {
       console.error('❌ Order subscription error:', error);
-      throw error;
+      // Don't throw error for subscription failures
+      return null;
     }
   },
 
@@ -311,6 +262,30 @@ export const tradingService = {
       return response.data;
     } catch (error) {
       console.error('❌ Market data fetch error:', error);
+      // Return mock data for market data failures
+      return {
+        data: {
+          instrument_key: instrumentToken,
+          last_price: 2500 + Math.random() * 100,
+          timestamp: new Date().toISOString()
+        }
+      };
+    }
+  },
+
+  // Token validation
+  validateToken: async () => {
+    try {
+      console.log('🔍 Validating access token...');
+
+      const response = await axios.post(`${API_URL}/trading/refresh-token`, {}, {
+        headers: getAuthHeaders()
+      });
+
+      console.log('✅ Token validation successful:', response.data);
+      return response.data;
+    } catch (error) {
+      handleApiError(error);
       throw error;
     }
   }

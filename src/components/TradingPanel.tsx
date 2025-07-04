@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { tradingService } from '../services/tradingService';
-import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock, RefreshCw } from 'lucide-react';
 
 const TradingPanel: React.FC = () => {
   const { user } = useAuth();
@@ -24,6 +24,28 @@ const TradingPanel: React.FC = () => {
   const [message, setMessage] = useState<{ type: 'success' | 'error', text: string } | null>(null);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [isValidatingToken, setIsValidatingToken] = useState(false);
+
+  useEffect(() => {
+    // Validate token on component mount
+    validateUserToken();
+  }, []);
+
+  const validateUserToken = async () => {
+    try {
+      setIsValidatingToken(true);
+      await tradingService.validateToken();
+      console.log('✅ Token validation successful');
+    } catch (error) {
+      console.error('❌ Token validation failed:', error);
+      setMessage({ 
+        type: 'error', 
+        text: 'Session expired. Please login again.' 
+      });
+    } finally {
+      setIsValidatingToken(false);
+    }
+  };
 
   // Mock instrument search - in production, integrate with Upstox instruments API
   const searchInstruments = async (query: string) => {
@@ -32,13 +54,57 @@ const TradingPanel: React.FC = () => {
       return;
     }
 
-    // Mock search results
+    // Mock search results with proper instrument tokens
     const mockResults = [
-      { instrument_token: 'NSE_EQ|INE002A01018', trading_symbol: 'RELIANCE', name: 'Reliance Industries Ltd', exchange: 'NSE' },
-      { instrument_token: 'NSE_EQ|INE467B01029', trading_symbol: 'TCS', name: 'Tata Consultancy Services Ltd', exchange: 'NSE' },
-      { instrument_token: 'NSE_EQ|INE009A01021', trading_symbol: 'INFY', name: 'Infosys Ltd', exchange: 'NSE' },
-      { instrument_token: 'NSE_EQ|INE040A01034', trading_symbol: 'HDFC', name: 'HDFC Bank Ltd', exchange: 'NSE' },
-      { instrument_token: 'NSE_EQ|INE030A01027', trading_symbol: 'ICICIBANK', name: 'ICICI Bank Ltd', exchange: 'NSE' }
+      { 
+        instrument_token: 'NSE_EQ|INE002A01018', 
+        trading_symbol: 'RELIANCE', 
+        name: 'Reliance Industries Ltd', 
+        exchange: 'NSE',
+        last_price: 2475.25
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE467B01029', 
+        trading_symbol: 'TCS', 
+        name: 'Tata Consultancy Services Ltd', 
+        exchange: 'NSE',
+        last_price: 3650.80
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE009A01021', 
+        trading_symbol: 'INFY', 
+        name: 'Infosys Ltd', 
+        exchange: 'NSE',
+        last_price: 1789.45
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE040A01034', 
+        trading_symbol: 'HDFCBANK', 
+        name: 'HDFC Bank Ltd', 
+        exchange: 'NSE',
+        last_price: 1654.30
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE030A01027', 
+        trading_symbol: 'ICICIBANK', 
+        name: 'ICICI Bank Ltd', 
+        exchange: 'NSE',
+        last_price: 1198.75
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE256A01028', 
+        trading_symbol: 'ZOMATO', 
+        name: 'Zomato Ltd', 
+        exchange: 'NSE',
+        last_price: 267.85
+      },
+      { 
+        instrument_token: 'NSE_EQ|INE758T01015', 
+        trading_symbol: 'IRCTC', 
+        name: 'Indian Railway Catering And Tourism Corporation Ltd', 
+        exchange: 'NSE',
+        last_price: 789.20
+      }
     ].filter(item => 
       item.trading_symbol.toLowerCase().includes(query.toLowerCase()) ||
       item.name.toLowerCase().includes(query.toLowerCase())
@@ -73,9 +139,11 @@ const TradingPanel: React.FC = () => {
         tag: orderForm.tag || `copy_trading_${Date.now()}`
       };
 
-      await tradingService.placeOrder(orderData);
+      console.log('📤 Submitting order:', orderData);
 
-      // Reset form
+      const response = await tradingService.placeOrder(orderData);
+
+      // Reset form on success
       setOrderForm({
         instrument_token: '',
         trading_symbol: '',
@@ -92,10 +160,30 @@ const TradingPanel: React.FC = () => {
         tag: ''
       });
 
-      setMessage({ type: 'success', text: 'Order placed successfully! It will be copied to all child accounts.' });
+      const successMessage = user?.role === 'parent' 
+        ? 'Order placed successfully! It will be copied to all child accounts.' 
+        : 'Order placed successfully!';
+      
+      setMessage({ type: 'success', text: successMessage });
+
+      // Clear success message after 5 seconds
+      setTimeout(() => setMessage(null), 5000);
+
     } catch (error: any) {
       console.error('Order placement failed:', error);
-      const errorMessage = error.response?.data?.message || error.message || 'Failed to place order. Please try again.';
+      
+      let errorMessage = 'Failed to place order. Please try again.';
+      
+      if (error.message.includes('Session expired')) {
+        errorMessage = 'Session expired. Please login again.';
+      } else if (error.response?.data?.details?.errors?.[0]?.message) {
+        errorMessage = error.response.data.details.errors[0].message;
+      } else if (error.response?.data?.message) {
+        errorMessage = error.response.data.message;
+      } else if (error.message) {
+        errorMessage = error.message;
+      }
+      
       setMessage({ type: 'error', text: errorMessage });
     } finally {
       setIsSubmitting(false);
@@ -129,7 +217,8 @@ const TradingPanel: React.FC = () => {
     setOrderForm({
       ...orderForm,
       trading_symbol: instrument.trading_symbol,
-      instrument_token: instrument.instrument_token
+      instrument_token: instrument.instrument_token,
+      price: instrument.last_price?.toString() || orderForm.price
     });
     setShowSearch(false);
     setSearchResults([]);
@@ -142,16 +231,37 @@ const TradingPanel: React.FC = () => {
     });
   };
 
+  if (isValidatingToken) {
+    return (
+      <div className="bg-gray-800 rounded-lg shadow-lg p-6">
+        <div className="flex items-center justify-center h-32">
+          <RefreshCw className="h-8 w-8 animate-spin text-blue-400" />
+          <span className="ml-3 text-white">Validating session...</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="bg-gray-800 rounded-lg shadow-lg p-6">
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-xl font-bold text-white">Trading Panel</h2>
-        {user?.role === 'parent' && (
-          <div className="flex items-center space-x-2 text-green-400">
-            <Target className="h-5 w-5" />
-            <span className="text-sm">Copy Trading Active</span>
-          </div>
-        )}
+        <div className="flex items-center space-x-3">
+          {user?.role === 'parent' && (
+            <div className="flex items-center space-x-2 text-green-400">
+              <Target className="h-5 w-5" />
+              <span className="text-sm">Copy Trading Active</span>
+            </div>
+          )}
+          <button
+            onClick={validateUserToken}
+            disabled={isValidatingToken}
+            className="flex items-center space-x-2 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-md transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${isValidatingToken ? 'animate-spin' : ''}`} />
+            <span>Validate</span>
+          </button>
+        </div>
       </div>
 
       {message && (
@@ -197,7 +307,10 @@ const TradingPanel: React.FC = () => {
                       <div className="text-white font-medium">{instrument.trading_symbol}</div>
                       <div className="text-gray-400 text-sm">{instrument.name}</div>
                     </div>
-                    <span className="text-blue-400 text-xs">{instrument.exchange}</span>
+                    <div className="text-right">
+                      <div className="text-blue-400 text-xs">{instrument.exchange}</div>
+                      <div className="text-white text-sm">₹{instrument.last_price}</div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -396,6 +509,16 @@ const TradingPanel: React.FC = () => {
             <span className="text-sm font-medium">
               This trade will be automatically copied to all connected child accounts
             </span>
+          </div>
+        </div>
+      )}
+
+      {/* Debug Info */}
+      {orderForm.instrument_token && (
+        <div className="mt-4 p-3 bg-gray-700 rounded-md">
+          <div className="text-xs text-gray-400">
+            <div>Instrument Token: {orderForm.instrument_token}</div>
+            <div>Trading Symbol: {orderForm.trading_symbol}</div>
           </div>
         </div>
       )}

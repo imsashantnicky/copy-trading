@@ -11,44 +11,95 @@ const orderHistory = new Map();
 
 // Upstox API base URLs
 const UPSTOX_API_BASE = 'https://api.upstox.com/v2';
-const UPSTOX_V3_API_BASE = 'https://api-sandbox.upstox.com/v3'; // Use live URL for production
+const UPSTOX_V3_API_BASE = 'https://api-v3.upstox.com'; // Corrected V3 URL
 
-// Helper function to make Upstox API calls
+// Helper function to make Upstox API calls with better error handling
 const makeUpstoxCall = async (endpoint, method = 'GET', data = null, accessToken) => {
-  const config = {
-    method,
-    url: `${UPSTOX_API_BASE}${endpoint}`,
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json'
+  try {
+    console.log(`🔗 Making Upstox API call: ${method} ${endpoint}`);
+    console.log(`🔑 Using token: ${accessToken?.substring(0, 20)}...`);
+    
+    const config = {
+      method,
+      url: `${UPSTOX_API_BASE}${endpoint}`,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000 // 30 second timeout
+    };
+
+    if (data && (method === 'POST' || method === 'PUT')) {
+      config.data = data;
     }
-  };
 
-  if (data && (method === 'POST' || method === 'PUT')) {
-    config.data = data;
-    config.headers['Content-Type'] = 'application/json';
+    const response = await axios(config);
+    console.log(`✅ Upstox API success: ${response.status}`);
+    return response;
+  } catch (error) {
+    console.error(`❌ Upstox API error for ${endpoint}:`, {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      message: error.message
+    });
+    throw error;
   }
-
-  return await axios(config);
 };
 
 // Helper function for V3 API calls (for order placement)
 const makeUpstoxV3Call = async (endpoint, method = 'POST', data = null, accessToken) => {
-  const config = {
-    method,
-    url: `${UPSTOX_V3_API_BASE}${endpoint}`,
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Accept': 'application/json',
-      'Content-Type': 'application/json'
+  try {
+    console.log(`🔗 Making Upstox V3 API call: ${method} ${endpoint}`);
+    console.log(`🔑 Using token: ${accessToken?.substring(0, 20)}...`);
+    console.log(`📤 Request data:`, JSON.stringify(data, null, 2));
+    
+    const config = {
+      method,
+      url: `${UPSTOX_V3_API_BASE}${endpoint}`,
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      timeout: 30000 // 30 second timeout
+    };
+
+    if (data) {
+      config.data = data;
     }
-  };
 
-  if (data) {
-    config.data = data;
+    const response = await axios(config);
+    console.log(`✅ Upstox V3 API success: ${response.status}`);
+    return response;
+  } catch (error) {
+    console.error(`❌ Upstox V3 API error for ${endpoint}:`, {
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      data: error.response?.data,
+      message: error.message,
+      config: {
+        url: error.config?.url,
+        method: error.config?.method,
+        headers: error.config?.headers
+      }
+    });
+    throw error;
   }
+};
 
-  return await axios(config);
+// Validate access token
+const validateAccessToken = async (accessToken) => {
+  try {
+    console.log('🔍 Validating access token...');
+    const response = await makeUpstoxCall('/user/profile', 'GET', null, accessToken);
+    console.log('✅ Token validation successful:', response.data);
+    return response.data;
+  } catch (error) {
+    console.error('❌ Token validation failed:', error.response?.data);
+    throw new Error('Invalid or expired access token');
+  }
 };
 
 // Get positions from Upstox
@@ -56,10 +107,13 @@ router.get('/positions', authenticateToken, async (req, res) => {
   try {
     console.log('📊 Fetching positions from Upstox...');
     
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
+    
     const response = await makeUpstoxCall('/portfolio/long-term-holdings', 'GET', null, req.user.access_token);
     
     // Transform Upstox response to our format
-    const positions = response.data.data.map(position => ({
+    const positions = response.data.data?.map(position => ({
       instrument_key: position.instrument_token,
       trading_symbol: position.trading_symbol,
       quantity: position.quantity,
@@ -71,11 +125,20 @@ router.get('/positions', authenticateToken, async (req, res) => {
       day_change_percentage: position.day_change_percentage,
       product: position.product,
       exchange: position.exchange
-    }));
+    })) || [];
 
     res.json({ success: true, positions });
   } catch (error) {
     console.error('❌ Positions fetch error:', error.response?.data || error.message);
+    
+    // Check if it's a token error
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
     
     // Fallback to mock data if API fails
     const mockPositions = [
@@ -94,7 +157,7 @@ router.get('/positions', authenticateToken, async (req, res) => {
       }
     ];
     
-    res.json({ success: true, positions: mockPositions });
+    res.json({ success: true, positions: mockPositions, mock: true });
   }
 });
 
@@ -103,10 +166,13 @@ router.get('/orders', authenticateToken, async (req, res) => {
   try {
     console.log('📋 Fetching orders from Upstox...');
     
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
+    
     const response = await makeUpstoxCall('/order/retrieve-all', 'GET', null, req.user.access_token);
     
     // Transform Upstox response to our format
-    const orders = response.data.data.map(order => ({
+    const orders = response.data.data?.map(order => ({
       order_id: order.order_id,
       instrument_token: order.instrument_token,
       trading_symbol: order.trading_symbol,
@@ -131,15 +197,24 @@ router.get('/orders', authenticateToken, async (req, res) => {
       order_timestamp: order.order_timestamp,
       exchange_timestamp: order.exchange_timestamp,
       user_id: req.user.user_id
-    }));
+    })) || [];
 
     res.json({ success: true, orders });
   } catch (error) {
     console.error('❌ Orders fetch error:', error.response?.data || error.message);
     
+    // Check if it's a token error
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+    
     // Fallback to stored orders or mock data
     const userOrders = orderHistory.get(req.user.user_id) || [];
-    res.json({ success: true, orders: userOrders });
+    res.json({ success: true, orders: userOrders, mock: true });
   }
 });
 
@@ -171,16 +246,20 @@ router.post('/orders', authenticateToken, async (req, res) => {
       quantity,
       price,
       order_type,
-      transaction_type
+      transaction_type,
+      accessToken: req.user.access_token?.substring(0, 20) + '...'
     });
 
     // Validate required fields
     if (!instrument_token || !quantity || !order_type || !transaction_type || !product) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing required fields' 
+        error: 'Missing required fields: instrument_token, quantity, order_type, transaction_type, product' 
       });
     }
+
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
 
     // Prepare order data for Upstox V3 API
     const orderData = {
@@ -198,14 +277,14 @@ router.post('/orders', authenticateToken, async (req, res) => {
       slice: Boolean(slice)
     };
 
-    console.log('📤 Sending order to Upstox V3 API:', orderData);
+    console.log('📤 Sending order to Upstox V3 API:', JSON.stringify(orderData, null, 2));
 
     // Place order with Upstox V3 API
     const response = await makeUpstoxV3Call('/order/place', 'POST', orderData, req.user.access_token);
     
     console.log('✅ Upstox order response:', response.data);
 
-    const orderIds = response.data.data.order_ids;
+    const orderIds = response.data.data?.order_ids || [response.data.data?.order_id];
     const primaryOrderId = orderIds[0];
 
     // Create order object for our system
@@ -252,6 +331,9 @@ router.post('/orders', authenticateToken, async (req, res) => {
           try {
             console.log(`📋 Copying order to child account: ${childAccount.user_id}`);
             
+            // Validate child account token first
+            await validateAccessToken(childAccount.access_token);
+            
             // Place same order for child account
             const childOrderData = {
               ...orderData,
@@ -260,7 +342,7 @@ router.post('/orders', authenticateToken, async (req, res) => {
 
             const childResponse = await makeUpstoxV3Call('/order/place', 'POST', childOrderData, childAccount.access_token);
             
-            const childOrderIds = childResponse.data.data.order_ids;
+            const childOrderIds = childResponse.data.data?.order_ids || [childResponse.data.data?.order_id];
             const childOrder = {
               ...order,
               order_id: childOrderIds[0],
@@ -281,6 +363,12 @@ router.post('/orders', authenticateToken, async (req, res) => {
             console.log(`✅ Order copied to child account: ${childAccount.user_id}`);
           } catch (childError) {
             console.error(`❌ Failed to copy order to child ${childAccount.user_id}:`, childError.response?.data || childError.message);
+            
+            // If child token is invalid, mark account as inactive
+            if (childError.response?.status === 401 || childError.message.includes('Invalid or expired')) {
+              childAccount.is_active = false;
+              console.log(`🔒 Marked child account ${childAccount.user_id} as inactive due to token error`);
+            }
           }
         }
       }
@@ -294,7 +382,22 @@ router.post('/orders', authenticateToken, async (req, res) => {
     });
 
   } catch (error) {
-    console.error('❌ Order placement error:', error.response?.data || error.message);
+    console.error('❌ Order placement error:', {
+      message: error.message,
+      response: error.response?.data,
+      status: error.response?.status,
+      config: error.config
+    });
+    
+    // Check if it's a token error
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED',
+        details: error.response?.data
+      });
+    }
     
     res.status(500).json({ 
       success: false, 
@@ -311,6 +414,9 @@ router.delete('/orders/:orderId', authenticateToken, async (req, res) => {
     const userId = req.user.user_id;
 
     console.log('❌ Cancelling order:', orderId);
+
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
 
     // Cancel order with Upstox API
     const response = await makeUpstoxCall(`/order/cancel`, 'DELETE', { order_id: orderId }, req.user.access_token);
@@ -330,6 +436,15 @@ router.delete('/orders/:orderId', authenticateToken, async (req, res) => {
     res.json({ success: true, message: 'Order cancelled successfully' });
   } catch (error) {
     console.error('❌ Order cancellation error:', error.response?.data || error.message);
+    
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+    
     res.status(500).json({ 
       success: false, 
       error: error.response?.data?.message || 'Failed to cancel order' 
@@ -342,21 +457,32 @@ router.get('/portfolio', authenticateToken, async (req, res) => {
   try {
     console.log('💰 Fetching portfolio from Upstox...');
     
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
+    
     const response = await makeUpstoxCall('/user/get-funds-and-margin', 'GET', null, req.user.access_token);
     
-    const equity = response.data.data.equity;
+    const equity = response.data.data?.equity || {};
     
     const portfolio = {
-      total_value: equity.used_margin + equity.available_margin,
+      total_value: (equity.used_margin || 0) + (equity.available_margin || 0),
       day_pnl: equity.unrealised_pnl || 0,
       total_pnl: equity.unrealised_pnl || 0,
-      available_margin: equity.available_margin,
-      used_margin: equity.used_margin
+      available_margin: equity.available_margin || 0,
+      used_margin: equity.used_margin || 0
     };
 
     res.json({ success: true, portfolio });
   } catch (error) {
     console.error('❌ Portfolio fetch error:', error.response?.data || error.message);
+    
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
     
     // Fallback to mock data
     const portfolio = {
@@ -367,7 +493,7 @@ router.get('/portfolio', authenticateToken, async (req, res) => {
       used_margin: 25000
     };
     
-    res.json({ success: true, portfolio });
+    res.json({ success: true, portfolio, mock: true });
   }
 });
 
@@ -400,6 +526,7 @@ router.post('/child-accounts', authenticateToken, async (req, res) => {
 
     // Verify child account by making a test API call
     try {
+      console.log('🔍 Verifying child account:', user_id);
       const testResponse = await makeUpstoxCall('/user/profile', 'GET', null, access_token);
       const childProfile = testResponse.data.data;
 
@@ -432,7 +559,8 @@ router.post('/child-accounts', authenticateToken, async (req, res) => {
       console.error('❌ Child account verification failed:', verificationError.response?.data);
       res.status(400).json({ 
         success: false, 
-        error: 'Invalid access token or child account not accessible' 
+        error: 'Invalid access token or child account not accessible',
+        details: verificationError.response?.data
       });
     }
   } catch (error) {
@@ -481,12 +609,15 @@ router.get('/market-data/:instrumentToken', authenticateToken, async (req, res) 
   try {
     const { instrumentToken } = req.params;
     
+    // First validate the token
+    await validateAccessToken(req.user.access_token);
+    
     // In production, use Upstox market data API
     const response = await makeUpstoxCall(`/market-quote/ltp?instrument_key=${instrumentToken}`, 'GET', null, req.user.access_token);
     
     const marketData = {
       instrument_key: instrumentToken,
-      last_price: response.data.data[instrumentToken].last_price,
+      last_price: response.data.data[instrumentToken]?.last_price || 0,
       timestamp: new Date().toISOString()
     };
 
@@ -494,9 +625,17 @@ router.get('/market-data/:instrumentToken', authenticateToken, async (req, res) 
   } catch (error) {
     console.error('❌ Market data fetch error:', error);
     
+    if (error.response?.status === 401 || error.message.includes('Invalid or expired')) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Access token expired or invalid. Please login again.',
+        code: 'TOKEN_EXPIRED'
+      });
+    }
+    
     // Fallback to mock data
     const mockMarketData = {
-      instrument_key: instrumentToken,
+      instrument_key: req.params.instrumentToken,
       last_price: 2500 + Math.random() * 100,
       close_price: 2480,
       day_change: Math.random() * 50 - 25,
@@ -505,7 +644,31 @@ router.get('/market-data/:instrumentToken', authenticateToken, async (req, res) 
       timestamp: new Date().toISOString()
     };
 
-    res.json({ success: true, data: mockMarketData });
+    res.json({ success: true, data: mockMarketData, mock: true });
+  }
+});
+
+// Token refresh endpoint
+router.post('/refresh-token', authenticateToken, async (req, res) => {
+  try {
+    console.log('🔄 Refreshing access token...');
+    
+    // In a real implementation, you would refresh the token using Upstox refresh token API
+    // For now, we'll validate the current token
+    const profile = await validateAccessToken(req.user.access_token);
+    
+    res.json({ 
+      success: true, 
+      message: 'Token is still valid',
+      profile: profile.data
+    });
+  } catch (error) {
+    console.error('❌ Token refresh error:', error);
+    res.status(401).json({ 
+      success: false, 
+      error: 'Token refresh failed. Please login again.',
+      code: 'TOKEN_EXPIRED'
+    });
   }
 });
 
