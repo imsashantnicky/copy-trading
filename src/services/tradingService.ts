@@ -12,8 +12,8 @@ const getAuthHeaders = () => {
   };
 };
 
-// Handle API errors and token expiration
-const handleApiError = (error: any) => {
+// Handle API errors WITHOUT redirecting to login - just throw the error
+const handleApiError = (error: any, shouldRedirect: boolean = false) => {
   if (axios.isAxiosError(error)) {
     console.error('❌ API Error:', {
       message: error.message,
@@ -26,14 +26,18 @@ const handleApiError = (error: any) => {
         error.response?.data?.code === 'TOKEN_EXPIRED' ||
         error.response?.data?.errors?.[0]?.errorCode === 'UDAPI100050') {
       
-      // Clear invalid token
-      localStorage.removeItem('upstox_token');
-      localStorage.removeItem('user_data');
+      // Only redirect if explicitly requested (for critical operations)
+      if (shouldRedirect) {
+        localStorage.removeItem('upstox_token');
+        localStorage.removeItem('user_data');
+        window.location.href = '/login';
+      }
       
-      // Redirect to login
-      window.location.href = '/login';
-      
-      throw new Error('Session expired. Please login again.');
+      // Create a specific error for token expiration
+      const tokenError = new Error('Session expired. Please login again.');
+      (tokenError as any).isTokenExpired = true;
+      (tokenError as any).originalError = error;
+      throw tokenError;
     }
   }
   throw error;
@@ -51,7 +55,7 @@ export const tradingService = {
       console.log('✅ Positions fetched:', response.data);
       return response.data.positions;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for positions
       return [];
     }
   },
@@ -67,7 +71,7 @@ export const tradingService = {
       console.log('✅ Orders fetched:', response.data);
       return response.data.orders;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for orders
       return [];
     }
   },
@@ -83,7 +87,7 @@ export const tradingService = {
       console.log('✅ Trades fetched:', response.data);
       return response.data.trades;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for trades
       return [];
     }
   },
@@ -129,7 +133,9 @@ export const tradingService = {
       console.log('✅ Order placed successfully:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      // For order placement, we want to show the error but NOT redirect
+      // Let the TradingPanel handle the error display
+      handleApiError(error, false);
       throw error;
     }
   },
@@ -145,7 +151,7 @@ export const tradingService = {
       console.log('✅ Order cancelled successfully:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for cancel
       throw error;
     }
   },
@@ -161,7 +167,7 @@ export const tradingService = {
       console.log('✅ Order modified successfully:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for modify
       throw error;
     }
   },
@@ -177,7 +183,7 @@ export const tradingService = {
       console.log('✅ Portfolio fetched:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for portfolio
       return { portfolio: { total_value: 0, day_pnl: 0, total_pnl: 0 } };
     }
   },
@@ -194,7 +200,7 @@ export const tradingService = {
       console.log('✅ Child accounts fetched:', response.data);
       return response.data.children;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for child accounts
       return [];
     }
   },
@@ -210,7 +216,7 @@ export const tradingService = {
       console.log('✅ Child account added successfully:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for adding child
       throw error;
     }
   },
@@ -226,7 +232,7 @@ export const tradingService = {
       console.log('✅ Child account removed successfully:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, false); // Don't redirect for removing child
       throw error;
     }
   },
@@ -273,8 +279,8 @@ export const tradingService = {
     }
   },
 
-  // Token validation
-  validateToken: async () => {
+  // Token validation - this one can redirect if needed
+  validateToken: async (shouldRedirect: boolean = false) => {
     try {
       console.log('🔍 Validating access token...');
 
@@ -285,8 +291,26 @@ export const tradingService = {
       console.log('✅ Token validation successful:', response.data);
       return response.data;
     } catch (error) {
-      handleApiError(error);
+      handleApiError(error, shouldRedirect);
       throw error;
+    }
+  },
+
+  // Check if user needs to re-login (for UI decisions)
+  checkAuthStatus: async () => {
+    try {
+      const token = localStorage.getItem('upstox_token');
+      if (!token) {
+        return { isValid: false, needsLogin: true };
+      }
+
+      await tradingService.validateToken(false);
+      return { isValid: true, needsLogin: false };
+    } catch (error: any) {
+      if (error.isTokenExpired) {
+        return { isValid: false, needsLogin: true, error: error.message };
+      }
+      return { isValid: false, needsLogin: false, error: error.message };
     }
   }
 };

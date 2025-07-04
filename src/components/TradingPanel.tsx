@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { tradingService } from '../services/tradingService';
-import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock, RefreshCw, Info } from 'lucide-react';
+import { TrendingUp, TrendingDown, DollarSign, Target, AlertCircle, Search, Clock, RefreshCw, Info, LogOut, AlertTriangle } from 'lucide-react';
 
 const TradingPanel: React.FC = () => {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
   const [orderForm, setOrderForm] = useState({
     instrument_token: '',
     trading_symbol: '',
@@ -21,18 +21,41 @@ const TradingPanel: React.FC = () => {
     tag: ''
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info', text: string } | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error' | 'info' | 'warning', text: string } | null>(null);
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [showSearch, setShowSearch] = useState(false);
   const [isValidatingToken, setIsValidatingToken] = useState(false);
   const [debugInfo, setDebugInfo] = useState<any>(null);
+  const [authStatus, setAuthStatus] = useState<{ isValid: boolean; needsLogin: boolean; error?: string } | null>(null);
 
   useEffect(() => {
-    // Validate token on component mount
-    validateUserToken();
+    // Check auth status on component mount
+    checkAuthStatus();
     // Get debug info
     getDebugInfo();
   }, []);
+
+  const checkAuthStatus = async () => {
+    try {
+      const status = await tradingService.checkAuthStatus();
+      setAuthStatus(status);
+      
+      if (status.needsLogin) {
+        setMessage({
+          type: 'warning',
+          text: 'Your session has expired. Please login again to continue trading.'
+        });
+      } else if (status.isValid) {
+        setMessage({
+          type: 'info',
+          text: 'Session is active and ready for trading.'
+        });
+        setTimeout(() => setMessage(null), 3000);
+      }
+    } catch (error) {
+      console.error('Failed to check auth status:', error);
+    }
+  };
 
   const getDebugInfo = async () => {
     try {
@@ -52,19 +75,29 @@ const TradingPanel: React.FC = () => {
   const validateUserToken = async () => {
     try {
       setIsValidatingToken(true);
-      await tradingService.validateToken();
+      await tradingService.validateToken(false); // Don't redirect
       console.log('✅ Token validation successful');
       setMessage({ 
         type: 'info', 
         text: 'Session validated successfully' 
       });
+      setAuthStatus({ isValid: true, needsLogin: false });
       setTimeout(() => setMessage(null), 3000);
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Token validation failed:', error);
-      setMessage({ 
-        type: 'error', 
-        text: 'Session expired. Please login again.' 
-      });
+      
+      if (error.isTokenExpired) {
+        setAuthStatus({ isValid: false, needsLogin: true, error: error.message });
+        setMessage({ 
+          type: 'warning', 
+          text: 'Your session has expired. Please login again to continue trading.' 
+        });
+      } else {
+        setMessage({ 
+          type: 'error', 
+          text: `Validation failed: ${error.message}` 
+        });
+      }
     } finally {
       setIsValidatingToken(false);
     }
@@ -160,6 +193,15 @@ const TradingPanel: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
+    // Check if user needs to login first
+    if (authStatus?.needsLogin) {
+      setMessage({ 
+        type: 'error', 
+        text: 'Please login again before placing orders.' 
+      });
+      return;
+    }
+    
     if (!orderForm.trading_symbol || !orderForm.quantity || !orderForm.price) {
       setMessage({ type: 'error', text: 'Please fill in all required fields' });
       return;
@@ -218,19 +260,26 @@ const TradingPanel: React.FC = () => {
       
       let errorMessage = 'Failed to place order. Please try again.';
       
-      if (error.message.includes('Session expired')) {
-        errorMessage = 'Session expired. Please login again.';
+      // Handle different types of errors
+      if (error.isTokenExpired) {
+        setAuthStatus({ isValid: false, needsLogin: true, error: error.message });
+        errorMessage = 'Your session has expired. Please login again to continue trading.';
+        setMessage({ type: 'warning', text: errorMessage });
       } else if (error.response?.data?.details?.errors?.[0]?.message) {
         errorMessage = error.response.data.details.errors[0].message;
+        setMessage({ type: 'error', text: errorMessage });
       } else if (error.response?.data?.error) {
         errorMessage = error.response.data.error;
+        setMessage({ type: 'error', text: errorMessage });
       } else if (error.response?.data?.message) {
         errorMessage = error.response.data.message;
+        setMessage({ type: 'error', text: errorMessage });
       } else if (error.message) {
         errorMessage = error.message;
+        setMessage({ type: 'error', text: errorMessage });
+      } else {
+        setMessage({ type: 'error', text: errorMessage });
       }
-      
-      setMessage({ type: 'error', text: errorMessage });
     } finally {
       setIsSubmitting(false);
     }
@@ -277,6 +326,11 @@ const TradingPanel: React.FC = () => {
     });
   };
 
+  const handleLoginRedirect = () => {
+    logout(); // Clear current session
+    // The logout function will handle the redirect
+  };
+
   if (isValidatingToken) {
     return (
       <div className="bg-gray-800 rounded-lg shadow-lg p-6">
@@ -310,6 +364,28 @@ const TradingPanel: React.FC = () => {
         </div>
       </div>
 
+      {/* Session Status Alert */}
+      {authStatus?.needsLogin && (
+        <div className="mb-4 p-4 bg-yellow-900 bg-opacity-50 rounded-md border border-yellow-700">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2 text-yellow-300">
+              <AlertTriangle className="h-5 w-5" />
+              <div>
+                <div className="font-medium">Session Expired</div>
+                <div className="text-sm">Your trading session has expired. Please login again to continue.</div>
+              </div>
+            </div>
+            <button
+              onClick={handleLoginRedirect}
+              className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors"
+            >
+              <LogOut className="h-4 w-4" />
+              <span>Login Again</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Debug Info */}
       {debugInfo && (
         <div className="mb-4 p-3 bg-blue-900 bg-opacity-30 rounded-md border border-blue-700">
@@ -320,6 +396,9 @@ const TradingPanel: React.FC = () => {
           <div className="text-xs text-blue-200 space-y-1">
             <div>Environment: <span className="font-mono">{debugInfo.UPSTOX_ENV}</span></div>
             <div>API Base: <span className="font-mono">{debugInfo.API_BASE}</span></div>
+            <div>Session Status: <span className={`font-mono ${authStatus?.isValid ? 'text-green-400' : 'text-red-400'}`}>
+              {authStatus?.isValid ? 'Valid' : 'Invalid'}
+            </span></div>
           </div>
         </div>
       )}
@@ -330,6 +409,8 @@ const TradingPanel: React.FC = () => {
             ? 'bg-green-900 bg-opacity-50 text-green-300 border border-green-700' 
             : message.type === 'info'
             ? 'bg-blue-900 bg-opacity-50 text-blue-300 border border-blue-700'
+            : message.type === 'warning'
+            ? 'bg-yellow-900 bg-opacity-50 text-yellow-300 border border-yellow-700'
             : 'bg-red-900 bg-opacity-50 text-red-300 border border-red-700'
         }`}>
           <AlertCircle className="h-4 w-4" />
@@ -352,11 +433,12 @@ const TradingPanel: React.FC = () => {
               placeholder="Search for stocks (e.g., RELIANCE, TCS, INFY)"
               className="w-full px-3 py-2 pl-10 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               required
+              disabled={authStatus?.needsLogin}
             />
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
           </div>
           
-          {showSearch && searchResults.length > 0 && (
+          {showSearch && searchResults.length > 0 && !authStatus?.needsLogin && (
             <div className="absolute z-10 w-full mt-1 bg-gray-700 border border-gray-600 rounded-md shadow-lg max-h-60 overflow-y-auto">
               {searchResults.map((instrument) => (
                 <div
@@ -394,6 +476,7 @@ const TradingPanel: React.FC = () => {
               min="1"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               required
+              disabled={authStatus?.needsLogin}
             />
           </div>
 
@@ -411,6 +494,7 @@ const TradingPanel: React.FC = () => {
               min="0"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               required
+              disabled={authStatus?.needsLogin}
             />
           </div>
         </div>
@@ -425,6 +509,7 @@ const TradingPanel: React.FC = () => {
               value={orderForm.order_type}
               onChange={handleInputChange}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             >
               <option value="LIMIT">Limit</option>
               <option value="MARKET">Market</option>
@@ -442,6 +527,7 @@ const TradingPanel: React.FC = () => {
               value={orderForm.product}
               onChange={handleInputChange}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             >
               <option value="D">Delivery</option>
               <option value="I">Intraday</option>
@@ -460,6 +546,7 @@ const TradingPanel: React.FC = () => {
               value={orderForm.validity}
               onChange={handleInputChange}
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             >
               <option value="DAY">Day</option>
               <option value="IOC">IOC</option>
@@ -479,6 +566,7 @@ const TradingPanel: React.FC = () => {
               step="0.05"
               min="0"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             />
           </div>
         </div>
@@ -497,6 +585,7 @@ const TradingPanel: React.FC = () => {
               placeholder="0"
               min="0"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             />
           </div>
 
@@ -511,6 +600,7 @@ const TradingPanel: React.FC = () => {
               onChange={handleInputChange}
               placeholder="Order tag"
               className="w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              disabled={authStatus?.needsLogin}
             />
           </div>
         </div>
@@ -524,6 +614,7 @@ const TradingPanel: React.FC = () => {
               checked={orderForm.is_amo}
               onChange={handleInputChange}
               className="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+              disabled={authStatus?.needsLogin}
             />
             <span className="text-sm">After Market Order</span>
             <Clock className="h-4 w-4" />
@@ -536,6 +627,7 @@ const TradingPanel: React.FC = () => {
               checked={orderForm.slice}
               onChange={handleInputChange}
               className="rounded bg-gray-700 border-gray-600 text-blue-600 focus:ring-blue-500"
+              disabled={authStatus?.needsLogin}
             />
             <span className="text-sm">Auto Slice</span>
           </label>
@@ -545,7 +637,7 @@ const TradingPanel: React.FC = () => {
           <button
             type="submit"
             onClick={() => handleTransactionTypeChange('BUY')}
-            disabled={isSubmitting}
+            disabled={isSubmitting || authStatus?.needsLogin}
             className="flex-1 flex items-center justify-center space-x-2 bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <TrendingUp className="h-5 w-5" />
@@ -555,7 +647,7 @@ const TradingPanel: React.FC = () => {
           <button
             type="submit"
             onClick={() => handleTransactionTypeChange('SELL')}
-            disabled={isSubmitting}
+            disabled={isSubmitting || authStatus?.needsLogin}
             className="flex-1 flex items-center justify-center space-x-2 bg-red-600 hover:bg-red-700 text-white font-medium py-3 px-4 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <TrendingDown className="h-5 w-5" />
@@ -564,7 +656,7 @@ const TradingPanel: React.FC = () => {
         </div>
       </form>
 
-      {user?.role === 'parent' && (
+      {user?.role === 'parent' && !authStatus?.needsLogin && (
         <div className="mt-6 p-4 bg-blue-900 bg-opacity-50 rounded-lg border border-blue-700">
           <div className="flex items-center space-x-2 text-blue-300">
             <DollarSign className="h-5 w-5" />
@@ -576,7 +668,7 @@ const TradingPanel: React.FC = () => {
       )}
 
       {/* Debug Info */}
-      {orderForm.instrument_token && (
+      {orderForm.instrument_token && !authStatus?.needsLogin && (
         <div className="mt-4 p-3 bg-gray-700 rounded-md">
           <div className="text-xs text-gray-400">
             <div>Instrument Token: <span className="font-mono">{orderForm.instrument_token}</span></div>
